@@ -19,10 +19,10 @@ let hasRethrowError: boolean = false;
 let rethrowError: mixed = null;
 
 const reporter = {
-  onError(error: mixed) {
-    hasError = true;
-    caughtError = error;
-  },
+    onError(error: mixed) {
+        hasError = true;
+        caughtError = error;
+    },
 };
 
 /**
@@ -38,20 +38,21 @@ const reporter = {
  * @param {*} context The context to use when calling the function
  * @param {...*} args Arguments for function
  */
-export function invokeGuardedCallback<A, B, C, D, E, F, Context>(
-  name: string | null,
-  func: (a: A, b: B, c: C, d: D, e: E, f: F) => mixed,
-  context: Context,
-  a: A,
-  b: B,
-  c: C,
-  d: D,
-  e: E,
-  f: F,
+// type, listener, undefined, event
+export function invokeGuardedCallback < A, B, C, D, E, F, Context > (
+    name: string | null,
+    func: (a: A, b: B, c: C, d: D, e: E, f: F) => mixed,
+    context: Context,
+    a: A,
+    b: B,
+    c: C,
+    d: D,
+    e: E,
+    f: F,
 ): void {
-  hasError = false;
-  caughtError = null;
-  invokeGuardedCallbackImpl.apply(reporter, arguments);
+    hasError = false;
+    caughtError = null;
+    invokeGuardedCallbackImpl.apply(reporter, arguments);
 }
 
 /**
@@ -64,33 +65,35 @@ export function invokeGuardedCallback<A, B, C, D, E, F, Context>(
  * @param {*} context The context to use when calling the function
  * @param {...*} args Arguments for function
  */
-export function invokeGuardedCallbackAndCatchFirstError<
-  A,
-  B,
-  C,
-  D,
-  E,
-  F,
-  Context,
->(
-  name: string | null,
-  func: (a: A, b: B, c: C, d: D, e: E, f: F) => void,
-  context: Context,
-  a: A,
-  b: B,
-  c: C,
-  d: D,
-  e: E,
-  f: F,
+// type, listener, undefined, event
+export function invokeGuardedCallbackAndCatchFirstError <
+A,
+B,
+C,
+D,
+E,
+F,
+Context, >
+(
+    name: string | null,
+    func: (a: A, b: B, c: C, d: D, e: E, f: F) => void,
+    context: Context,
+    a: A,
+    b: B,
+    c: C,
+    d: D,
+    e: E,
+    f: F,
 ): void {
-  invokeGuardedCallback.apply(this, arguments);
-  if (hasError) {
-    const error = clearCaughtError();
-    if (!hasRethrowError) {
-      hasRethrowError = true;
-      rethrowError = error;
+
+    invokeGuardedCallback.apply(this, arguments);
+    if (hasError) {
+        const error = clearCaughtError();
+        if (!hasRethrowError) {
+            hasRethrowError = true;
+            rethrowError = error;
+        }
     }
-  }
 }
 
 /**
@@ -98,29 +101,29 @@ export function invokeGuardedCallbackAndCatchFirstError<
  * we will rethrow to be handled by the top level error handler.
  */
 export function rethrowCaughtError() {
-  if (hasRethrowError) {
-    const error = rethrowError;
-    hasRethrowError = false;
-    rethrowError = null;
-    throw error;
-  }
+    if (hasRethrowError) {
+        const error = rethrowError;
+        hasRethrowError = false;
+        rethrowError = null;
+        throw error;
+    }
 }
 
 export function hasCaughtError() {
-  return hasError;
+    return hasError;
 }
 
 export function clearCaughtError() {
-  if (hasError) {
-    const error = caughtError;
-    hasError = false;
-    caughtError = null;
-    return error;
-  } else {
-    invariant(
-      false,
-      'clearCaughtError was called but no error was captured. This error ' +
-        'is likely caused by a bug in React. Please file an issue.',
-    );
-  }
+    if (hasError) {
+        const error = caughtError;
+        hasError = false;
+        caughtError = null;
+        return error;
+    } else {
+        invariant(
+            false,
+            'clearCaughtError was called but no error was captured. This error ' +
+            'is likely caused by a bug in React. Please file an issue.',
+        );
+    }
 }

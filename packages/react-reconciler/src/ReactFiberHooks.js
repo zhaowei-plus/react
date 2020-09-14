@@ -8,92 +8,100 @@
  */
 
 import type {
-  MutableSource,
-  MutableSourceGetSnapshotFn,
-  MutableSourceSubscribeFn,
+  ReactEventResponder,
   ReactContext,
+  ReactEventResponderListener,
 } from 'shared/ReactTypes';
-import type {Fiber, Dispatcher} from './ReactInternalTypes';
-import type {Lanes, Lane} from './ReactFiberLane';
-import type {HookFlags} from './ReactHookEffectTags';
-import type {ReactPriorityLevel} from './ReactInternalTypes';
-import type {FiberRoot} from './ReactInternalTypes';
-import type {OpaqueIDType} from './ReactFiberHostConfig';
+import type {Fiber} from './ReactFiber';
+import type {ExpirationTime} from './ReactFiberExpirationTime';
+import type {HookEffectTag} from './ReactHookEffectTags';
+import type {SuspenseConfig} from './ReactFiberSuspenseConfig';
+import type {ReactPriorityLevel} from './SchedulerWithReactIntegration';
 
 import ReactSharedInternals from 'shared/ReactSharedInternals';
-import {
-  enableDebugTracing,
-  enableSchedulingProfiler,
-  enableNewReconciler,
-  decoupleUpdatePriorityFromScheduler,
-} from 'shared/ReactFeatureFlags';
 
-import {NoMode, BlockingMode, DebugTracingMode} from './ReactTypeOfMode';
-import {
-  NoLane,
-  NoLanes,
-  InputContinuousLanePriority,
-  isSubsetOfLanes,
-  mergeLanes,
-  removeLanes,
-  markRootEntangled,
-  markRootMutableRead,
-  getCurrentUpdateLanePriority,
-  setCurrentUpdateLanePriority,
-  higherLanePriority,
-  DefaultLanePriority,
-} from './ReactFiberLane';
-import {readContext} from './ReactFiberNewContext.old';
+import {NoWork, Sync} from './ReactFiberExpirationTime';
+import {readContext} from './ReactFiberNewContext';
+import {createDeprecatedResponderListener} from './ReactFiberDeprecatedEvents';
 import {
   Update as UpdateEffect,
   Passive as PassiveEffect,
-} from './ReactFiberFlags';
+} from 'shared/ReactSideEffectTags';
 import {
   HasEffect as HookHasEffect,
   Layout as HookLayout,
   Passive as HookPassive,
 } from './ReactHookEffectTags';
 import {
-  getWorkInProgressRoot,
-  scheduleUpdateOnFiber,
-  requestUpdateLane,
-  requestEventTime,
+  scheduleWork,
+  computeExpirationForFiber,
+  requestCurrentTimeForUpdate,
   warnIfNotCurrentlyActingEffectsInDEV,
   warnIfNotCurrentlyActingUpdatesInDev,
   warnIfNotScopedWithMatchingAct,
-  markSkippedUpdateLanes,
-} from './ReactFiberWorkLoop.old';
+  markRenderEventTimeAndConfig,
+  markUnprocessedUpdateTime,
+} from './ReactFiberWorkLoop';
 
 import invariant from 'shared/invariant';
 import getComponentName from 'shared/getComponentName';
 import is from 'shared/objectIs';
-import {markWorkInProgressReceivedUpdate} from './ReactFiberBeginWork.old';
+import {markWorkInProgressReceivedUpdate} from './ReactFiberBeginWork';
+import {requestCurrentSuspenseConfig} from './ReactFiberSuspenseConfig';
 import {
   UserBlockingPriority,
   NormalPriority,
   runWithPriority,
   getCurrentPriorityLevel,
-} from './SchedulerWithReactIntegration.old';
-import {getIsHydrating} from './ReactFiberHydrationContext.old';
-import {
-  makeClientId,
-  makeClientIdInDEV,
-  makeOpaqueHydratingObject,
-} from './ReactFiberHostConfig';
-import {
-  getWorkInProgressVersion,
-  markSourceAsDirty,
-  setWorkInProgressVersion,
-  warnAboutMultipleRenderersDEV,
-} from './ReactMutableSource.old';
-import {getIsRendering} from './ReactCurrentFiber';
-import {logStateUpdateScheduled} from './DebugTracing';
-import {markStateUpdateScheduled} from './SchedulingProfiler';
+} from './SchedulerWithReactIntegration';
 
 const {ReactCurrentDispatcher, ReactCurrentBatchConfig} = ReactSharedInternals;
 
+export type Dispatcher = {|
+  readContext<T>(
+    context: ReactContext<T>,
+    observedBits: void | number | boolean,
+  ): T,
+  useState<S>(initialState: (() => S) | S): [S, Dispatch<BasicStateAction<S>>],
+  useReducer<S, I, A>(
+    reducer: (S, A) => S,
+    initialArg: I,
+    init?: (I) => S,
+  ): [S, Dispatch<A>],
+  useContext<T>(
+    context: ReactContext<T>,
+    observedBits: void | number | boolean,
+  ): T,
+  useRef<T>(initialValue: T): {|current: T|},
+  useEffect(
+    create: () => (() => void) | void,
+    deps: Array<mixed> | void | null,
+  ): void,
+  useLayoutEffect(
+    create: () => (() => void) | void,
+    deps: Array<mixed> | void | null,
+  ): void,
+  useCallback<T>(callback: T, deps: Array<mixed> | void | null): T,
+  useMemo<T>(nextCreate: () => T, deps: Array<mixed> | void | null): T,
+  useImperativeHandle<T>(
+    ref: {|current: T | null|} | ((inst: T | null) => mixed) | null | void,
+    create: () => T,
+    deps: Array<mixed> | void | null,
+  ): void,
+  useDebugValue<T>(value: T, formatterFn: ?(value: T) => mixed): void,
+  useResponder<E, C>(
+    responder: ReactEventResponder<E, C>,
+    props: Object,
+  ): ReactEventResponderListener<E, C>,
+  useDeferredValue<T>(value: T, config: TimeoutConfig | void | null): T,
+  useTransition(
+    config: SuspenseConfig | void | null,
+  ): [(() => void) => void, boolean],
+|};
+
 type Update<S, A> = {|
-  lane: Lane,
+  expirationTime: ExpirationTime,
+  suspenseConfig: null | SuspenseConfig,
   action: A,
   eagerReducer: ((S, A) => S) | null,
   eagerState: S | null,
@@ -119,15 +127,12 @@ export type HookType =
   | 'useMemo'
   | 'useImperativeHandle'
   | 'useDebugValue'
+  | 'useResponder'
   | 'useDeferredValue'
-  | 'useTransition'
-  | 'useMutableSource'
-  | 'useOpaqueIdentifier';
+  | 'useTransition';
 
 let didWarnAboutMismatchedHooksForComponent;
-let didWarnAboutUseOpaqueIdentifier;
 if (__DEV__) {
-  didWarnAboutUseOpaqueIdentifier = {};
   didWarnAboutMismatchedHooksForComponent = new Set();
 }
 
@@ -140,7 +145,7 @@ export type Hook = {|
 |};
 
 export type Effect = {|
-  tag: HookFlags,
+  tag: HookEffectTag,
   create: () => (() => void) | void,
   destroy: (() => void) | void,
   deps: Array<mixed> | null,
@@ -149,12 +154,16 @@ export type Effect = {|
 
 export type FunctionComponentUpdateQueue = {|lastEffect: Effect | null|};
 
+export type TimeoutConfig = {|
+  timeoutMs: number,
+|};
+
 type BasicStateAction<S> = (S => S) | S;
 
 type Dispatch<A> = A => void;
 
 // These are set right before calling the component.
-let renderLanes: Lanes = NoLanes;
+let renderExpirationTime: ExpirationTime = NoWork;
 // The work-in-progress fiber. I've named it differently to distinguish it from
 // the work-in-progress hook.
 let currentlyRenderingFiber: Fiber = (null: any);
@@ -171,11 +180,6 @@ let workInProgressHook: Hook | null = null;
 // finished evaluating this component. This is an optimization so we know
 // whether we need to clear render phase updates after a throw.
 let didScheduleRenderPhaseUpdate: boolean = false;
-// Where an update was scheduled only during the current render pass. This
-// gets reset after each attempt.
-// TODO: Maybe there's some way to consolidate this with
-// `didScheduleRenderPhaseUpdate`. Or with `numberOfReRenders`.
-let didScheduleRenderPhaseUpdateDuringThisPass: boolean = false;
 
 const RE_RENDER_LIMIT = 25;
 
@@ -267,7 +271,7 @@ function warnOnHookMismatchInDev(currentHookName: HookType) {
         console.error(
           'React has detected a change in the order of Hooks called by %s. ' +
             'This will lead to bugs and errors if not fixed. ' +
-            'For more information, read the Rules of Hooks: https://reactjs.org/link/rules-of-hooks\n\n' +
+            'For more information, read the Rules of Hooks: https://fb.me/rules-of-hooks\n\n' +
             '   Previous render            Next render\n' +
             '   ------------------------------------------------------\n' +
             '%s' +
@@ -288,7 +292,7 @@ function throwInvalidHookError() {
       '1. You might have mismatching versions of React and the renderer (such as React DOM)\n' +
       '2. You might be breaking the Rules of Hooks\n' +
       '3. You might have more than one copy of React in the same app\n' +
-      'See https://reactjs.org/link/invalid-hook-call for tips about how to debug and fix this problem.',
+      'See https://fb.me/react-invalid-hook-call for tips about how to debug and fix this problem.',
   );
 }
 
@@ -339,15 +343,15 @@ function areHookInputsEqual(
   return true;
 }
 
-export function renderWithHooks<Props, SecondArg>(
+export function renderWithHooks(
   current: Fiber | null,
   workInProgress: Fiber,
-  Component: (p: Props, arg: SecondArg) => any,
-  props: Props,
-  secondArg: SecondArg,
-  nextRenderLanes: Lanes,
+  Component: any,
+  props: any,
+  secondArg: any,
+  nextRenderExpirationTime: ExpirationTime,
 ): any {
-  renderLanes = nextRenderLanes;
+  renderExpirationTime = nextRenderExpirationTime;
   currentlyRenderingFiber = workInProgress;
 
   if (__DEV__) {
@@ -363,7 +367,7 @@ export function renderWithHooks<Props, SecondArg>(
 
   workInProgress.memoizedState = null;
   workInProgress.updateQueue = null;
-  workInProgress.lanes = NoLanes;
+  workInProgress.expirationTime = NoWork;
 
   // The following should have already been reset
   // currentHook = null;
@@ -401,12 +405,13 @@ export function renderWithHooks<Props, SecondArg>(
   let children = Component(props, secondArg);
 
   // Check if there was a render phase update
-  if (didScheduleRenderPhaseUpdateDuringThisPass) {
+  if (workInProgress.expirationTime === renderExpirationTime) {
     // Keep rendering in a loop for as long as render phase updates continue to
     // be scheduled. Use a counter to prevent infinite loops.
     let numberOfReRenders: number = 0;
     do {
-      didScheduleRenderPhaseUpdateDuringThisPass = false;
+      workInProgress.expirationTime = NoWork;
+
       invariant(
         numberOfReRenders < RE_RENDER_LIMIT,
         'Too many re-renders. React limits the number of renders to prevent ' +
@@ -436,7 +441,7 @@ export function renderWithHooks<Props, SecondArg>(
         : HooksDispatcherOnRerender;
 
       children = Component(props, secondArg);
-    } while (didScheduleRenderPhaseUpdateDuringThisPass);
+    } while (workInProgress.expirationTime === renderExpirationTime);
   }
 
   // We can assume the previous dispatcher is always this one, since we set it
@@ -452,7 +457,7 @@ export function renderWithHooks<Props, SecondArg>(
   const didRenderTooFewHooks =
     currentHook !== null && currentHook.next !== null;
 
-  renderLanes = NoLanes;
+  renderExpirationTime = NoWork;
   currentlyRenderingFiber = (null: any);
 
   currentHook = null;
@@ -478,11 +483,13 @@ export function renderWithHooks<Props, SecondArg>(
 export function bailoutHooks(
   current: Fiber,
   workInProgress: Fiber,
-  lanes: Lanes,
+  expirationTime: ExpirationTime,
 ) {
   workInProgress.updateQueue = current.updateQueue;
-  workInProgress.flags &= ~(PassiveEffect | UpdateEffect);
-  current.lanes = removeLanes(current.lanes, lanes);
+  workInProgress.effectTag &= ~(PassiveEffect | UpdateEffect);
+  if (current.expirationTime <= expirationTime) {
+    current.expirationTime = NoWork;
+  }
 }
 
 export function resetHooksAfterThrow(): void {
@@ -507,10 +514,9 @@ export function resetHooksAfterThrow(): void {
       }
       hook = hook.next;
     }
-    didScheduleRenderPhaseUpdate = false;
   }
 
-  renderLanes = NoLanes;
+  renderExpirationTime = NoWork;
   currentlyRenderingFiber = (null: any);
 
   currentHook = null;
@@ -521,11 +527,9 @@ export function resetHooksAfterThrow(): void {
     hookTypesUpdateIndexDev = -1;
 
     currentHookNameInDev = null;
-
-    isUpdatingOpaqueValueInRenderPhase = false;
   }
 
-  didScheduleRenderPhaseUpdateDuringThisPass = false;
+  didScheduleRenderPhaseUpdate = false;
 }
 
 function mountWorkInProgressHook(): Hook {
@@ -558,7 +562,7 @@ function updateWorkInProgressHook(): Hook {
   // the dispatcher used for mounts.
   let nextCurrentHook: null | Hook;
   if (currentHook === null) {
-    const current = currentlyRenderingFiber.alternate;
+    let current = currentlyRenderingFiber.alternate;
     if (current !== null) {
       nextCurrentHook = current.memoizedState;
     } else {
@@ -669,26 +673,16 @@ function updateReducer<S, I, A>(
   let baseQueue = current.baseQueue;
 
   // The last pending update that hasn't been processed yet.
-  const pendingQueue = queue.pending;
+  let pendingQueue = queue.pending;
   if (pendingQueue !== null) {
     // We have new updates that haven't been processed yet.
     // We'll add them to the base queue.
     if (baseQueue !== null) {
       // Merge the pending queue and the base queue.
-      const baseFirst = baseQueue.next;
-      const pendingFirst = pendingQueue.next;
+      let baseFirst = baseQueue.next;
+      let pendingFirst = pendingQueue.next;
       baseQueue.next = pendingFirst;
       pendingQueue.next = baseFirst;
-    }
-    if (__DEV__) {
-      if (current.baseQueue !== baseQueue) {
-        // Internal invariant that should never happen, but feasibly could in
-        // the future if we implement resuming, or some form of that.
-        console.error(
-          'Internal error: Expected work-in-progress queue to be a clone. ' +
-            'This is a bug in React.',
-        );
-      }
     }
     current.baseQueue = baseQueue = pendingQueue;
     queue.pending = null;
@@ -696,7 +690,7 @@ function updateReducer<S, I, A>(
 
   if (baseQueue !== null) {
     // We have a queue to process.
-    const first = baseQueue.next;
+    let first = baseQueue.next;
     let newState = current.baseState;
 
     let newBaseState = null;
@@ -704,13 +698,14 @@ function updateReducer<S, I, A>(
     let newBaseQueueLast = null;
     let update = first;
     do {
-      const updateLane = update.lane;
-      if (!isSubsetOfLanes(renderLanes, updateLane)) {
+      const updateExpirationTime = update.expirationTime;
+      if (updateExpirationTime < renderExpirationTime) {
         // Priority is insufficient. Skip this update. If this is the first
         // skipped update, the previous update/state is the new base
         // update/state.
         const clone: Update<S, A> = {
-          lane: updateLane,
+          expirationTime: update.expirationTime,
+          suspenseConfig: update.suspenseConfig,
           action: update.action,
           eagerReducer: update.eagerReducer,
           eagerState: update.eagerState,
@@ -723,22 +718,17 @@ function updateReducer<S, I, A>(
           newBaseQueueLast = newBaseQueueLast.next = clone;
         }
         // Update the remaining priority in the queue.
-        // TODO: Don't need to accumulate this. Instead, we can remove
-        // renderLanes from the original lanes.
-        currentlyRenderingFiber.lanes = mergeLanes(
-          currentlyRenderingFiber.lanes,
-          updateLane,
-        );
-        markSkippedUpdateLanes(updateLane);
+        if (updateExpirationTime > currentlyRenderingFiber.expirationTime) {
+          currentlyRenderingFiber.expirationTime = updateExpirationTime;
+          markUnprocessedUpdateTime(updateExpirationTime);
+        }
       } else {
         // This update does have sufficient priority.
 
         if (newBaseQueueLast !== null) {
           const clone: Update<S, A> = {
-            // This update is going to be committed so we never want uncommit
-            // it. Using NoLane works because 0 is a subset of all bitmasks, so
-            // this will never be skipped by the check above.
-            lane: NoLane,
+            expirationTime: Sync, // This update is going to be committed so we never want uncommit it.
+            suspenseConfig: update.suspenseConfig,
             action: update.action,
             eagerReducer: update.eagerReducer,
             eagerState: update.eagerState,
@@ -746,6 +736,17 @@ function updateReducer<S, I, A>(
           };
           newBaseQueueLast = newBaseQueueLast.next = clone;
         }
+
+        // Mark the event time of this update as relevant to this render pass.
+        // TODO: This should ideally use the true event time of this update rather than
+        // its priority which is a derived and not reverseable value.
+        // TODO: We should skip this update if it was already committed but currently
+        // we have no way of detecting the difference between a committed and suspended
+        // update here.
+        markRenderEventTimeAndConfig(
+          updateExpirationTime,
+          update.suspenseConfig,
+        );
 
         // Process this update.
         if (update.eagerReducer === reducer) {
@@ -837,280 +838,6 @@ function rerenderReducer<S, I, A>(
   return [newState, dispatch];
 }
 
-type MutableSourceMemoizedState<Source, Snapshot> = {|
-  refs: {
-    getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
-    setSnapshot: Snapshot => void,
-  },
-  source: MutableSource<any>,
-  subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
-|};
-
-function readFromUnsubcribedMutableSource<Source, Snapshot>(
-  root: FiberRoot,
-  source: MutableSource<Source>,
-  getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
-): Snapshot {
-  if (__DEV__) {
-    warnAboutMultipleRenderersDEV(source);
-  }
-
-  const getVersion = source._getVersion;
-  const version = getVersion(source._source);
-
-  // Is it safe for this component to read from this source during the current render?
-  let isSafeToReadFromSource = false;
-
-  // Check the version first.
-  // If this render has already been started with a specific version,
-  // we can use it alone to determine if we can safely read from the source.
-  const currentRenderVersion = getWorkInProgressVersion(source);
-  if (currentRenderVersion !== null) {
-    // It's safe to read if the store hasn't been mutated since the last time
-    // we read something.
-    isSafeToReadFromSource = currentRenderVersion === version;
-  } else {
-    // If there's no version, then this is the first time we've read from the
-    // source during the current render pass, so we need to do a bit more work.
-    // What we need to determine is if there are any hooks that already
-    // subscribed to the source, and if so, whether there are any pending
-    // mutations that haven't been synchronized yet.
-    //
-    // If there are no pending mutations, then `root.mutableReadLanes` will be
-    // empty, and we know we can safely read.
-    //
-    // If there *are* pending mutations, we may still be able to safely read
-    // if the currently rendering lanes are inclusive of the pending mutation
-    // lanes, since that guarantees that the value we're about to read from
-    // the source is consistent with the values that we read during the most
-    // recent mutation.
-    isSafeToReadFromSource = isSubsetOfLanes(
-      renderLanes,
-      root.mutableReadLanes,
-    );
-
-    if (isSafeToReadFromSource) {
-      // If it's safe to read from this source during the current render,
-      // store the version in case other components read from it.
-      // A changed version number will let those components know to throw and restart the render.
-      setWorkInProgressVersion(source, version);
-    }
-  }
-
-  if (isSafeToReadFromSource) {
-    const snapshot = getSnapshot(source._source);
-    if (__DEV__) {
-      if (typeof snapshot === 'function') {
-        console.error(
-          'Mutable source should not return a function as the snapshot value. ' +
-            'Functions may close over mutable values and cause tearing.',
-        );
-      }
-    }
-    return snapshot;
-  } else {
-    // This handles the special case of a mutable source being shared between renderers.
-    // In that case, if the source is mutated between the first and second renderer,
-    // The second renderer don't know that it needs to reset the WIP version during unwind,
-    // (because the hook only marks sources as dirty if it's written to their WIP version).
-    // That would cause this tear check to throw again and eventually be visible to the user.
-    // We can avoid this infinite loop by explicitly marking the source as dirty.
-    //
-    // This can lead to tearing in the first renderer when it resumes,
-    // but there's nothing we can do about that (short of throwing here and refusing to continue the render).
-    markSourceAsDirty(source);
-
-    invariant(
-      false,
-      'Cannot read from mutable source during the current render without tearing. This is a bug in React. Please file an issue.',
-    );
-  }
-}
-
-function useMutableSource<Source, Snapshot>(
-  hook: Hook,
-  source: MutableSource<Source>,
-  getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
-  subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
-): Snapshot {
-  const root = ((getWorkInProgressRoot(): any): FiberRoot);
-  invariant(
-    root !== null,
-    'Expected a work-in-progress root. This is a bug in React. Please file an issue.',
-  );
-
-  const getVersion = source._getVersion;
-  const version = getVersion(source._source);
-
-  const dispatcher = ReactCurrentDispatcher.current;
-
-  // eslint-disable-next-line prefer-const
-  let [currentSnapshot, setSnapshot] = dispatcher.useState(() =>
-    readFromUnsubcribedMutableSource(root, source, getSnapshot),
-  );
-  let snapshot = currentSnapshot;
-
-  // Grab a handle to the state hook as well.
-  // We use it to clear the pending update queue if we have a new source.
-  const stateHook = ((workInProgressHook: any): Hook);
-
-  const memoizedState = ((hook.memoizedState: any): MutableSourceMemoizedState<
-    Source,
-    Snapshot,
-  >);
-  const refs = memoizedState.refs;
-  const prevGetSnapshot = refs.getSnapshot;
-  const prevSource = memoizedState.source;
-  const prevSubscribe = memoizedState.subscribe;
-
-  const fiber = currentlyRenderingFiber;
-
-  hook.memoizedState = ({
-    refs,
-    source,
-    subscribe,
-  }: MutableSourceMemoizedState<Source, Snapshot>);
-
-  // Sync the values needed by our subscription handler after each commit.
-  dispatcher.useEffect(() => {
-    refs.getSnapshot = getSnapshot;
-
-    // Normally the dispatch function for a state hook never changes,
-    // but this hook recreates the queue in certain cases  to avoid updates from stale sources.
-    // handleChange() below needs to reference the dispatch function without re-subscribing,
-    // so we use a ref to ensure that it always has the latest version.
-    refs.setSnapshot = setSnapshot;
-
-    // Check for a possible change between when we last rendered now.
-    const maybeNewVersion = getVersion(source._source);
-    if (!is(version, maybeNewVersion)) {
-      const maybeNewSnapshot = getSnapshot(source._source);
-      if (__DEV__) {
-        if (typeof maybeNewSnapshot === 'function') {
-          console.error(
-            'Mutable source should not return a function as the snapshot value. ' +
-              'Functions may close over mutable values and cause tearing.',
-          );
-        }
-      }
-
-      if (!is(snapshot, maybeNewSnapshot)) {
-        setSnapshot(maybeNewSnapshot);
-
-        const lane = requestUpdateLane(fiber);
-        markRootMutableRead(root, lane);
-      }
-      // If the source mutated between render and now,
-      // there may be state updates already scheduled from the old source.
-      // Entangle the updates so that they render in the same batch.
-      markRootEntangled(root, root.mutableReadLanes);
-    }
-  }, [getSnapshot, source, subscribe]);
-
-  // If we got a new source or subscribe function, re-subscribe in a passive effect.
-  dispatcher.useEffect(() => {
-    const handleChange = () => {
-      const latestGetSnapshot = refs.getSnapshot;
-      const latestSetSnapshot = refs.setSnapshot;
-
-      try {
-        latestSetSnapshot(latestGetSnapshot(source._source));
-
-        // Record a pending mutable source update with the same expiration time.
-        const lane = requestUpdateLane(fiber);
-
-        markRootMutableRead(root, lane);
-      } catch (error) {
-        // A selector might throw after a source mutation.
-        // e.g. it might try to read from a part of the store that no longer exists.
-        // In this case we should still schedule an update with React.
-        // Worst case the selector will throw again and then an error boundary will handle it.
-        latestSetSnapshot(
-          (() => {
-            throw error;
-          }: any),
-        );
-      }
-    };
-
-    const unsubscribe = subscribe(source._source, handleChange);
-    if (__DEV__) {
-      if (typeof unsubscribe !== 'function') {
-        console.error(
-          'Mutable source subscribe function must return an unsubscribe function.',
-        );
-      }
-    }
-
-    return unsubscribe;
-  }, [source, subscribe]);
-
-  // If any of the inputs to useMutableSource change, reading is potentially unsafe.
-  //
-  // If either the source or the subscription have changed we can't can't trust the update queue.
-  // Maybe the source changed in a way that the old subscription ignored but the new one depends on.
-  //
-  // If the getSnapshot function changed, we also shouldn't rely on the update queue.
-  // It's possible that the underlying source was mutated between the when the last "change" event fired,
-  // and when the current render (with the new getSnapshot function) is processed.
-  //
-  // In both cases, we need to throw away pending updates (since they are no longer relevant)
-  // and treat reading from the source as we do in the mount case.
-  if (
-    !is(prevGetSnapshot, getSnapshot) ||
-    !is(prevSource, source) ||
-    !is(prevSubscribe, subscribe)
-  ) {
-    // Create a new queue and setState method,
-    // So if there are interleaved updates, they get pushed to the older queue.
-    // When this becomes current, the previous queue and dispatch method will be discarded,
-    // including any interleaving updates that occur.
-    const newQueue = {
-      pending: null,
-      dispatch: null,
-      lastRenderedReducer: basicStateReducer,
-      lastRenderedState: snapshot,
-    };
-    newQueue.dispatch = setSnapshot = (dispatchAction.bind(
-      null,
-      currentlyRenderingFiber,
-      newQueue,
-    ): any);
-    stateHook.queue = newQueue;
-    stateHook.baseQueue = null;
-    snapshot = readFromUnsubcribedMutableSource(root, source, getSnapshot);
-    stateHook.memoizedState = stateHook.baseState = snapshot;
-  }
-
-  return snapshot;
-}
-
-function mountMutableSource<Source, Snapshot>(
-  source: MutableSource<Source>,
-  getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
-  subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
-): Snapshot {
-  const hook = mountWorkInProgressHook();
-  hook.memoizedState = ({
-    refs: {
-      getSnapshot,
-      setSnapshot: (null: any),
-    },
-    source,
-    subscribe,
-  }: MutableSourceMemoizedState<Source, Snapshot>);
-  return useMutableSource(hook, source, getSnapshot, subscribe);
-}
-
-function updateMutableSource<Source, Snapshot>(
-  source: MutableSource<Source>,
-  getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
-  subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
-): Snapshot {
-  const hook = updateWorkInProgressHook();
-  return useMutableSource(hook, source, getSnapshot, subscribe);
-}
-
 function mountState<S>(
   initialState: (() => S) | S,
 ): [S, Dispatch<BasicStateAction<S>>] {
@@ -1165,7 +892,7 @@ function pushEffect(tag, create, destroy, deps) {
   let componentUpdateQueue: null | FunctionComponentUpdateQueue = (currentlyRenderingFiber.updateQueue: any);
   if (componentUpdateQueue === null) {
     componentUpdateQueue = createFunctionComponentUpdateQueue();
-    // TODO 这里的赋值为什么都要用()包裹起来？？？
+    // TODO 这里的赋值为什么都要用
     currentlyRenderingFiber.updateQueue = (componentUpdateQueue: any);
     componentUpdateQueue.lastEffect = effect.next = effect;
   } else {
@@ -1197,19 +924,19 @@ function updateRef<T>(initialValue: T): {|current: T|} {
   return hook.memoizedState;
 }
 
-function mountEffectImpl(fiberFlags, hookFlags, create, deps): void {
+function mountEffectImpl(fiberEffectTag, hookEffectTag, create, deps): void {
   const hook = mountWorkInProgressHook();
   const nextDeps = deps === undefined ? null : deps;
-  currentlyRenderingFiber.flags |= fiberFlags;
+  currentlyRenderingFiber.effectTag |= fiberEffectTag;
   hook.memoizedState = pushEffect(
-    HookHasEffect | hookFlags,
+    HookHasEffect | hookEffectTag,
     create,
     undefined,
     nextDeps,
   );
 }
 
-function updateEffectImpl(fiberFlags, hookFlags, create, deps): void {
+function updateEffectImpl(fiberEffectTag, hookEffectTag, create, deps): void {
   const hook = updateWorkInProgressHook();
   const nextDeps = deps === undefined ? null : deps;
   let destroy = undefined;
@@ -1220,16 +947,16 @@ function updateEffectImpl(fiberFlags, hookFlags, create, deps): void {
     if (nextDeps !== null) {
       const prevDeps = prevEffect.deps;
       if (areHookInputsEqual(nextDeps, prevDeps)) {
-        pushEffect(hookFlags, create, destroy, nextDeps);
+        pushEffect(hookEffectTag, create, destroy, nextDeps);
         return;
       }
     }
   }
 
-  currentlyRenderingFiber.flags |= fiberFlags;
+  currentlyRenderingFiber.effectTag |= fiberEffectTag;
 
   hook.memoizedState = pushEffect(
-    HookHasEffect | hookFlags,
+    HookHasEffect | hookEffectTag,
     create,
     destroy,
     nextDeps,
@@ -1433,220 +1160,111 @@ function updateMemo<T>(
   return nextValue;
 }
 
-function mountDeferredValue<T>(value: T): T {
+function mountDeferredValue<T>(
+  value: T,
+  config: TimeoutConfig | void | null,
+): T {
   const [prevValue, setValue] = mountState(value);
   mountEffect(() => {
-    const prevTransition = ReactCurrentBatchConfig.transition;
-    ReactCurrentBatchConfig.transition = 1;
+    const previousConfig = ReactCurrentBatchConfig.suspense;
+    ReactCurrentBatchConfig.suspense = config === undefined ? null : config;
     try {
       setValue(value);
     } finally {
-      ReactCurrentBatchConfig.transition = prevTransition;
+      ReactCurrentBatchConfig.suspense = previousConfig;
     }
-  }, [value]);
+  }, [value, config]);
   return prevValue;
 }
 
-function updateDeferredValue<T>(value: T): T {
+function updateDeferredValue<T>(
+  value: T,
+  config: TimeoutConfig | void | null,
+): T {
   const [prevValue, setValue] = updateState(value);
   updateEffect(() => {
-    const prevTransition = ReactCurrentBatchConfig.transition;
-    ReactCurrentBatchConfig.transition = 1;
+    const previousConfig = ReactCurrentBatchConfig.suspense;
+    ReactCurrentBatchConfig.suspense = config === undefined ? null : config;
     try {
       setValue(value);
     } finally {
-      ReactCurrentBatchConfig.transition = prevTransition;
+      ReactCurrentBatchConfig.suspense = previousConfig;
     }
-  }, [value]);
+  }, [value, config]);
   return prevValue;
 }
 
-function rerenderDeferredValue<T>(value: T): T {
+function rerenderDeferredValue<T>(
+  value: T,
+  config: TimeoutConfig | void | null,
+): T {
   const [prevValue, setValue] = rerenderState(value);
   updateEffect(() => {
-    const prevTransition = ReactCurrentBatchConfig.transition;
-    ReactCurrentBatchConfig.transition = 1;
+    const previousConfig = ReactCurrentBatchConfig.suspense;
+    ReactCurrentBatchConfig.suspense = config === undefined ? null : config;
     try {
       setValue(value);
     } finally {
-      ReactCurrentBatchConfig.transition = prevTransition;
+      ReactCurrentBatchConfig.suspense = previousConfig;
     }
-  }, [value]);
+  }, [value, config]);
   return prevValue;
 }
 
-function startTransition(setPending, callback) {
+function startTransition(setPending, config, callback) {
   const priorityLevel = getCurrentPriorityLevel();
-  if (decoupleUpdatePriorityFromScheduler) {
-    const previousLanePriority = getCurrentUpdateLanePriority();
-    setCurrentUpdateLanePriority(
-      higherLanePriority(previousLanePriority, InputContinuousLanePriority),
-    );
-
-    runWithPriority(
-      priorityLevel < UserBlockingPriority
-        ? UserBlockingPriority
-        : priorityLevel,
-      () => {
-        setPending(true);
-      },
-    );
-
-    // TODO: Can remove this. Was only necessary because we used to give
-    // different behavior to transitions without a config object. Now they are
-    // all treated the same.
-    setCurrentUpdateLanePriority(DefaultLanePriority);
-
-    runWithPriority(
-      priorityLevel > NormalPriority ? NormalPriority : priorityLevel,
-      () => {
-        const prevTransition = ReactCurrentBatchConfig.transition;
-        ReactCurrentBatchConfig.transition = 1;
-        try {
-          setPending(false);
-          callback();
-        } finally {
-          if (decoupleUpdatePriorityFromScheduler) {
-            setCurrentUpdateLanePriority(previousLanePriority);
-          }
-          ReactCurrentBatchConfig.transition = prevTransition;
-        }
-      },
-    );
-  } else {
-    runWithPriority(
-      priorityLevel < UserBlockingPriority
-        ? UserBlockingPriority
-        : priorityLevel,
-      () => {
-        setPending(true);
-      },
-    );
-
-    runWithPriority(
-      priorityLevel > NormalPriority ? NormalPriority : priorityLevel,
-      () => {
-        const prevTransition = ReactCurrentBatchConfig.transition;
-        ReactCurrentBatchConfig.transition = 1;
-        try {
-          setPending(false);
-          callback();
-        } finally {
-          ReactCurrentBatchConfig.transition = prevTransition;
-        }
-      },
-    );
-  }
-}
-
-function mountTransition(): [(() => void) => void, boolean] {
-  const [isPending, setPending] = mountState(false);
-  // The `start` method can be stored on a ref, since `setPending`
-  // never changes.
-  const start = startTransition.bind(null, setPending);
-  mountRef(start);
-  return [start, isPending];
-}
-
-function updateTransition(): [(() => void) => void, boolean] {
-  const [isPending] = updateState(false);
-  const startRef = updateRef();
-  const start: (() => void) => void = (startRef.current: any);
-  return [start, isPending];
-}
-
-function rerenderTransition(): [(() => void) => void, boolean] {
-  const [isPending] = rerenderState(false);
-  const startRef = updateRef();
-  const start: (() => void) => void = (startRef.current: any);
-  return [start, isPending];
-}
-
-let isUpdatingOpaqueValueInRenderPhase = false;
-export function getIsUpdatingOpaqueValueInRenderPhaseInDEV(): boolean | void {
-  if (__DEV__) {
-    return isUpdatingOpaqueValueInRenderPhase;
-  }
-}
-
-function warnOnOpaqueIdentifierAccessInDEV(fiber) {
-  if (__DEV__) {
-    // TODO: Should warn in effects and callbacks, too
-    const name = getComponentName(fiber.type) || 'Unknown';
-    if (getIsRendering() && !didWarnAboutUseOpaqueIdentifier[name]) {
-      console.error(
-        'The object passed back from useOpaqueIdentifier is meant to be ' +
-          'passed through to attributes only. Do not read the ' +
-          'value directly.',
-      );
-      didWarnAboutUseOpaqueIdentifier[name] = true;
-    }
-  }
-}
-
-function mountOpaqueIdentifier(): OpaqueIDType | void {
-  const makeId = __DEV__
-    ? makeClientIdInDEV.bind(
-        null,
-        warnOnOpaqueIdentifierAccessInDEV.bind(null, currentlyRenderingFiber),
-      )
-    : makeClientId;
-
-  if (getIsHydrating()) {
-    let didUpgrade = false;
-    const fiber = currentlyRenderingFiber;
-    const readValue = () => {
-      if (!didUpgrade) {
-        // Only upgrade once. This works even inside the render phase because
-        // the update is added to a shared queue, which outlasts the
-        // in-progress render.
-        didUpgrade = true;
-        if (__DEV__) {
-          isUpdatingOpaqueValueInRenderPhase = true;
-          setId(makeId());
-          isUpdatingOpaqueValueInRenderPhase = false;
-          warnOnOpaqueIdentifierAccessInDEV(fiber);
-        } else {
-          setId(makeId());
-        }
+  runWithPriority(
+    priorityLevel < UserBlockingPriority ? UserBlockingPriority : priorityLevel,
+    () => {
+      setPending(true);
+    },
+  );
+  runWithPriority(
+    priorityLevel > NormalPriority ? NormalPriority : priorityLevel,
+    () => {
+      const previousConfig = ReactCurrentBatchConfig.suspense;
+      ReactCurrentBatchConfig.suspense = config === undefined ? null : config;
+      try {
+        setPending(false);
+        callback();
+      } finally {
+        ReactCurrentBatchConfig.suspense = previousConfig;
       }
-      invariant(
-        false,
-        'The object passed back from useOpaqueIdentifier is meant to be ' +
-          'passed through to attributes only. Do not read the value directly.',
-      );
-    };
-    const id = makeOpaqueHydratingObject(readValue);
-
-    const setId = mountState(id)[1];
-
-    if ((currentlyRenderingFiber.mode & BlockingMode) === NoMode) {
-      currentlyRenderingFiber.flags |= UpdateEffect | PassiveEffect;
-      pushEffect(
-        HookHasEffect | HookPassive,
-        () => {
-          setId(makeId());
-        },
-        undefined,
-        null,
-      );
-    }
-    return id;
-  } else {
-    const id = makeId();
-    mountState(id);
-    return id;
-  }
+    },
+  );
 }
 
-function updateOpaqueIdentifier(): OpaqueIDType | void {
-  const id = updateState(undefined)[0];
-  return id;
+function mountTransition(
+  config: SuspenseConfig | void | null,
+): [(() => void) => void, boolean] {
+  const [isPending, setPending] = mountState(false);
+  const start = mountCallback(startTransition.bind(null, setPending, config), [
+    setPending,
+    config,
+  ]);
+  return [start, isPending];
 }
 
-function rerenderOpaqueIdentifier(): OpaqueIDType | void {
-  const id = rerenderState(undefined)[0];
-  return id;
+function updateTransition(
+  config: SuspenseConfig | void | null,
+): [(() => void) => void, boolean] {
+  const [isPending, setPending] = updateState(false);
+  const start = updateCallback(startTransition.bind(null, setPending, config), [
+    setPending,
+    config,
+  ]);
+  return [start, isPending];
+}
+
+function rerenderTransition(
+  config: SuspenseConfig | void | null,
+): [(() => void) => void, boolean] {
+  const [isPending, setPending] = rerenderState(false);
+  const start = updateCallback(startTransition.bind(null, setPending, config), [
+    setPending,
+    config,
+  ]);
+  return [start, isPending];
 }
 
 function dispatchAction<S, A>(
@@ -1664,16 +1282,26 @@ function dispatchAction<S, A>(
     }
   }
 
-  const eventTime = requestEventTime();
-  const lane = requestUpdateLane(fiber);
+  const currentTime = requestCurrentTimeForUpdate();
+  const suspenseConfig = requestCurrentSuspenseConfig();
+  const expirationTime = computeExpirationForFiber(
+    currentTime,
+    fiber,
+    suspenseConfig,
+  );
 
   const update: Update<S, A> = {
-    lane,
+    expirationTime,
+    suspenseConfig,
     action,
     eagerReducer: null,
     eagerState: null,
     next: (null: any),
   };
+
+  if (__DEV__) {
+    update.priority = getCurrentPriorityLevel();
+  }
 
   // Append the update to the end of the list.
   const pending = queue.pending;
@@ -1694,11 +1322,13 @@ function dispatchAction<S, A>(
     // This is a render phase update. Stash it in a lazily-created map of
     // queue -> linked list of updates. After this render pass, we'll restart
     // and apply the stashed updates on top of the work-in-progress hook.
-    didScheduleRenderPhaseUpdateDuringThisPass = didScheduleRenderPhaseUpdate = true;
+    didScheduleRenderPhaseUpdate = true;
+    update.expirationTime = renderExpirationTime;
+    currentlyRenderingFiber.expirationTime = renderExpirationTime;
   } else {
     if (
-      fiber.lanes === NoLanes &&
-      (alternate === null || alternate.lanes === NoLanes)
+      fiber.expirationTime === NoWork &&
+      (alternate === null || alternate.expirationTime === NoWork)
     ) {
       // The queue is currently empty, which means we can eagerly compute the
       // next state before entering the render phase. If the new state is the
@@ -1742,20 +1372,7 @@ function dispatchAction<S, A>(
         warnIfNotCurrentlyActingUpdatesInDev(fiber);
       }
     }
-    scheduleUpdateOnFiber(fiber, lane, eventTime);
-  }
-
-  if (__DEV__) {
-    if (enableDebugTracing) {
-      if (fiber.mode & DebugTracingMode) {
-        const name = getComponentName(fiber.type) || 'Unknown';
-        logStateUpdateScheduled(name, lane, action);
-      }
-    }
-  }
-
-  if (enableSchedulingProfiler) {
-    markStateUpdateScheduled(fiber, lane);
+    scheduleWork(fiber, expirationTime);
   }
 }
 
@@ -1772,12 +1389,9 @@ export const ContextOnlyDispatcher: Dispatcher = {
   useRef: throwInvalidHookError,
   useState: throwInvalidHookError,
   useDebugValue: throwInvalidHookError,
+  useResponder: throwInvalidHookError,
   useDeferredValue: throwInvalidHookError,
   useTransition: throwInvalidHookError,
-  useMutableSource: throwInvalidHookError,
-  useOpaqueIdentifier: throwInvalidHookError,
-
-  unstable_isNewReconciler: enableNewReconciler,
 };
 
 const HooksDispatcherOnMount: Dispatcher = {
@@ -1793,12 +1407,9 @@ const HooksDispatcherOnMount: Dispatcher = {
   useRef: mountRef,
   useState: mountState,
   useDebugValue: mountDebugValue,
+  useResponder: createDeprecatedResponderListener,
   useDeferredValue: mountDeferredValue,
   useTransition: mountTransition,
-  useMutableSource: mountMutableSource,
-  useOpaqueIdentifier: mountOpaqueIdentifier,
-
-  unstable_isNewReconciler: enableNewReconciler,
 };
 
 const HooksDispatcherOnUpdate: Dispatcher = {
@@ -1814,12 +1425,9 @@ const HooksDispatcherOnUpdate: Dispatcher = {
   useRef: updateRef,
   useState: updateState,
   useDebugValue: updateDebugValue,
+  useResponder: createDeprecatedResponderListener,
   useDeferredValue: updateDeferredValue,
   useTransition: updateTransition,
-  useMutableSource: updateMutableSource,
-  useOpaqueIdentifier: updateOpaqueIdentifier,
-
-  unstable_isNewReconciler: enableNewReconciler,
 };
 
 const HooksDispatcherOnRerender: Dispatcher = {
@@ -1835,12 +1443,9 @@ const HooksDispatcherOnRerender: Dispatcher = {
   useRef: updateRef,
   useState: rerenderState,
   useDebugValue: updateDebugValue,
+  useResponder: createDeprecatedResponderListener,
   useDeferredValue: rerenderDeferredValue,
   useTransition: rerenderTransition,
-  useMutableSource: updateMutableSource,
-  useOpaqueIdentifier: rerenderOpaqueIdentifier,
-
-  unstable_isNewReconciler: enableNewReconciler,
 };
 
 let HooksDispatcherOnMountInDEV: Dispatcher | null = null;
@@ -1866,7 +1471,7 @@ if (__DEV__) {
       'Do not call Hooks inside useEffect(...), useMemo(...), or other built-in Hooks. ' +
         'You can only call Hooks at the top level of your React function. ' +
         'For more information, see ' +
-        'https://reactjs.org/link/rules-of-hooks',
+        'https://fb.me/rules-of-hooks',
     );
   };
 
@@ -1877,6 +1482,7 @@ if (__DEV__) {
     ): T {
       return readContext(context, observedBits);
     },
+
     useCallback<T>(callback: T, deps: Array<mixed> | void | null): T {
       currentHookNameInDev = 'useCallback';
       mountHookTypesDev();
@@ -1970,32 +1576,26 @@ if (__DEV__) {
       mountHookTypesDev();
       return mountDebugValue(value, formatterFn);
     },
-    useDeferredValue<T>(value: T): T {
+    useResponder<E, C>(
+      responder: ReactEventResponder<E, C>,
+      props,
+    ): ReactEventResponderListener<E, C> {
+      currentHookNameInDev = 'useResponder';
+      mountHookTypesDev();
+      return createDeprecatedResponderListener(responder, props);
+    },
+    useDeferredValue<T>(value: T, config: TimeoutConfig | void | null): T {
       currentHookNameInDev = 'useDeferredValue';
       mountHookTypesDev();
-      return mountDeferredValue(value);
+      return mountDeferredValue(value, config);
     },
-    useTransition(): [(() => void) => void, boolean] {
+    useTransition(
+      config: SuspenseConfig | void | null,
+    ): [(() => void) => void, boolean] {
       currentHookNameInDev = 'useTransition';
       mountHookTypesDev();
-      return mountTransition();
+      return mountTransition(config);
     },
-    useMutableSource<Source, Snapshot>(
-      source: MutableSource<Source>,
-      getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
-      subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
-    ): Snapshot {
-      currentHookNameInDev = 'useMutableSource';
-      mountHookTypesDev();
-      return mountMutableSource(source, getSnapshot, subscribe);
-    },
-    useOpaqueIdentifier(): OpaqueIDType | void {
-      currentHookNameInDev = 'useOpaqueIdentifier';
-      mountHookTypesDev();
-      return mountOpaqueIdentifier();
-    },
-
-    unstable_isNewReconciler: enableNewReconciler,
   };
 
   HooksDispatcherOnMountWithHookTypesInDEV = {
@@ -2005,6 +1605,7 @@ if (__DEV__) {
     ): T {
       return readContext(context, observedBits);
     },
+
     useCallback<T>(callback: T, deps: Array<mixed> | void | null): T {
       currentHookNameInDev = 'useCallback';
       updateHookTypesDev();
@@ -2092,32 +1693,26 @@ if (__DEV__) {
       updateHookTypesDev();
       return mountDebugValue(value, formatterFn);
     },
-    useDeferredValue<T>(value: T): T {
+    useResponder<E, C>(
+      responder: ReactEventResponder<E, C>,
+      props,
+    ): ReactEventResponderListener<E, C> {
+      currentHookNameInDev = 'useResponder';
+      updateHookTypesDev();
+      return createDeprecatedResponderListener(responder, props);
+    },
+    useDeferredValue<T>(value: T, config: TimeoutConfig | void | null): T {
       currentHookNameInDev = 'useDeferredValue';
       updateHookTypesDev();
-      return mountDeferredValue(value);
+      return mountDeferredValue(value, config);
     },
-    useTransition(): [(() => void) => void, boolean] {
+    useTransition(
+      config: SuspenseConfig | void | null,
+    ): [(() => void) => void, boolean] {
       currentHookNameInDev = 'useTransition';
       updateHookTypesDev();
-      return mountTransition();
+      return mountTransition(config);
     },
-    useMutableSource<Source, Snapshot>(
-      source: MutableSource<Source>,
-      getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
-      subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
-    ): Snapshot {
-      currentHookNameInDev = 'useMutableSource';
-      updateHookTypesDev();
-      return mountMutableSource(source, getSnapshot, subscribe);
-    },
-    useOpaqueIdentifier(): OpaqueIDType | void {
-      currentHookNameInDev = 'useOpaqueIdentifier';
-      updateHookTypesDev();
-      return mountOpaqueIdentifier();
-    },
-
-    unstable_isNewReconciler: enableNewReconciler,
   };
 
   HooksDispatcherOnUpdateInDEV = {
@@ -2127,6 +1722,7 @@ if (__DEV__) {
     ): T {
       return readContext(context, observedBits);
     },
+
     useCallback<T>(callback: T, deps: Array<mixed> | void | null): T {
       currentHookNameInDev = 'useCallback';
       updateHookTypesDev();
@@ -2214,32 +1810,26 @@ if (__DEV__) {
       updateHookTypesDev();
       return updateDebugValue(value, formatterFn);
     },
-    useDeferredValue<T>(value: T): T {
+    useResponder<E, C>(
+      responder: ReactEventResponder<E, C>,
+      props,
+    ): ReactEventResponderListener<E, C> {
+      currentHookNameInDev = 'useResponder';
+      updateHookTypesDev();
+      return createDeprecatedResponderListener(responder, props);
+    },
+    useDeferredValue<T>(value: T, config: TimeoutConfig | void | null): T {
       currentHookNameInDev = 'useDeferredValue';
       updateHookTypesDev();
-      return updateDeferredValue(value);
+      return updateDeferredValue(value, config);
     },
-    useTransition(): [(() => void) => void, boolean] {
+    useTransition(
+      config: SuspenseConfig | void | null,
+    ): [(() => void) => void, boolean] {
       currentHookNameInDev = 'useTransition';
       updateHookTypesDev();
-      return updateTransition();
+      return updateTransition(config);
     },
-    useMutableSource<Source, Snapshot>(
-      source: MutableSource<Source>,
-      getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
-      subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
-    ): Snapshot {
-      currentHookNameInDev = 'useMutableSource';
-      updateHookTypesDev();
-      return updateMutableSource(source, getSnapshot, subscribe);
-    },
-    useOpaqueIdentifier(): OpaqueIDType | void {
-      currentHookNameInDev = 'useOpaqueIdentifier';
-      updateHookTypesDev();
-      return updateOpaqueIdentifier();
-    },
-
-    unstable_isNewReconciler: enableNewReconciler,
   };
 
   HooksDispatcherOnRerenderInDEV = {
@@ -2337,32 +1927,26 @@ if (__DEV__) {
       updateHookTypesDev();
       return updateDebugValue(value, formatterFn);
     },
-    useDeferredValue<T>(value: T): T {
+    useResponder<E, C>(
+      responder: ReactEventResponder<E, C>,
+      props,
+    ): ReactEventResponderListener<E, C> {
+      currentHookNameInDev = 'useResponder';
+      updateHookTypesDev();
+      return createDeprecatedResponderListener(responder, props);
+    },
+    useDeferredValue<T>(value: T, config: TimeoutConfig | void | null): T {
       currentHookNameInDev = 'useDeferredValue';
       updateHookTypesDev();
-      return rerenderDeferredValue(value);
+      return rerenderDeferredValue(value, config);
     },
-    useTransition(): [(() => void) => void, boolean] {
+    useTransition(
+      config: SuspenseConfig | void | null,
+    ): [(() => void) => void, boolean] {
       currentHookNameInDev = 'useTransition';
       updateHookTypesDev();
-      return rerenderTransition();
+      return rerenderTransition(config);
     },
-    useMutableSource<Source, Snapshot>(
-      source: MutableSource<Source>,
-      getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
-      subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
-    ): Snapshot {
-      currentHookNameInDev = 'useMutableSource';
-      updateHookTypesDev();
-      return updateMutableSource(source, getSnapshot, subscribe);
-    },
-    useOpaqueIdentifier(): OpaqueIDType | void {
-      currentHookNameInDev = 'useOpaqueIdentifier';
-      updateHookTypesDev();
-      return rerenderOpaqueIdentifier();
-    },
-
-    unstable_isNewReconciler: enableNewReconciler,
   };
 
   InvalidNestedHooksDispatcherOnMountInDEV = {
@@ -2373,6 +1957,7 @@ if (__DEV__) {
       warnInvalidContextAccess();
       return readContext(context, observedBits);
     },
+
     useCallback<T>(callback: T, deps: Array<mixed> | void | null): T {
       currentHookNameInDev = 'useCallback';
       warnInvalidHookAccess();
@@ -2470,36 +2055,29 @@ if (__DEV__) {
       mountHookTypesDev();
       return mountDebugValue(value, formatterFn);
     },
-    useDeferredValue<T>(value: T): T {
+    useResponder<E, C>(
+      responder: ReactEventResponder<E, C>,
+      props,
+    ): ReactEventResponderListener<E, C> {
+      currentHookNameInDev = 'useResponder';
+      warnInvalidHookAccess();
+      mountHookTypesDev();
+      return createDeprecatedResponderListener(responder, props);
+    },
+    useDeferredValue<T>(value: T, config: TimeoutConfig | void | null): T {
       currentHookNameInDev = 'useDeferredValue';
       warnInvalidHookAccess();
       mountHookTypesDev();
-      return mountDeferredValue(value);
+      return mountDeferredValue(value, config);
     },
-    useTransition(): [(() => void) => void, boolean] {
+    useTransition(
+      config: SuspenseConfig | void | null,
+    ): [(() => void) => void, boolean] {
       currentHookNameInDev = 'useTransition';
       warnInvalidHookAccess();
       mountHookTypesDev();
-      return mountTransition();
+      return mountTransition(config);
     },
-    useMutableSource<Source, Snapshot>(
-      source: MutableSource<Source>,
-      getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
-      subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
-    ): Snapshot {
-      currentHookNameInDev = 'useMutableSource';
-      warnInvalidHookAccess();
-      mountHookTypesDev();
-      return mountMutableSource(source, getSnapshot, subscribe);
-    },
-    useOpaqueIdentifier(): OpaqueIDType | void {
-      currentHookNameInDev = 'useOpaqueIdentifier';
-      warnInvalidHookAccess();
-      mountHookTypesDev();
-      return mountOpaqueIdentifier();
-    },
-
-    unstable_isNewReconciler: enableNewReconciler,
   };
 
   InvalidNestedHooksDispatcherOnUpdateInDEV = {
@@ -2510,6 +2088,7 @@ if (__DEV__) {
       warnInvalidContextAccess();
       return readContext(context, observedBits);
     },
+
     useCallback<T>(callback: T, deps: Array<mixed> | void | null): T {
       currentHookNameInDev = 'useCallback';
       warnInvalidHookAccess();
@@ -2607,36 +2186,29 @@ if (__DEV__) {
       updateHookTypesDev();
       return updateDebugValue(value, formatterFn);
     },
-    useDeferredValue<T>(value: T): T {
+    useResponder<E, C>(
+      responder: ReactEventResponder<E, C>,
+      props,
+    ): ReactEventResponderListener<E, C> {
+      currentHookNameInDev = 'useResponder';
+      warnInvalidHookAccess();
+      updateHookTypesDev();
+      return createDeprecatedResponderListener(responder, props);
+    },
+    useDeferredValue<T>(value: T, config: TimeoutConfig | void | null): T {
       currentHookNameInDev = 'useDeferredValue';
       warnInvalidHookAccess();
       updateHookTypesDev();
-      return updateDeferredValue(value);
+      return updateDeferredValue(value, config);
     },
-    useTransition(): [(() => void) => void, boolean] {
+    useTransition(
+      config: SuspenseConfig | void | null,
+    ): [(() => void) => void, boolean] {
       currentHookNameInDev = 'useTransition';
       warnInvalidHookAccess();
       updateHookTypesDev();
-      return updateTransition();
+      return updateTransition(config);
     },
-    useMutableSource<Source, Snapshot>(
-      source: MutableSource<Source>,
-      getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
-      subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
-    ): Snapshot {
-      currentHookNameInDev = 'useMutableSource';
-      warnInvalidHookAccess();
-      updateHookTypesDev();
-      return updateMutableSource(source, getSnapshot, subscribe);
-    },
-    useOpaqueIdentifier(): OpaqueIDType | void {
-      currentHookNameInDev = 'useOpaqueIdentifier';
-      warnInvalidHookAccess();
-      updateHookTypesDev();
-      return updateOpaqueIdentifier();
-    },
-
-    unstable_isNewReconciler: enableNewReconciler,
   };
 
   InvalidNestedHooksDispatcherOnRerenderInDEV = {
@@ -2745,35 +2317,28 @@ if (__DEV__) {
       updateHookTypesDev();
       return updateDebugValue(value, formatterFn);
     },
-    useDeferredValue<T>(value: T): T {
+    useResponder<E, C>(
+      responder: ReactEventResponder<E, C>,
+      props,
+    ): ReactEventResponderListener<E, C> {
+      currentHookNameInDev = 'useResponder';
+      warnInvalidHookAccess();
+      updateHookTypesDev();
+      return createDeprecatedResponderListener(responder, props);
+    },
+    useDeferredValue<T>(value: T, config: TimeoutConfig | void | null): T {
       currentHookNameInDev = 'useDeferredValue';
       warnInvalidHookAccess();
       updateHookTypesDev();
-      return rerenderDeferredValue(value);
+      return rerenderDeferredValue(value, config);
     },
-    useTransition(): [(() => void) => void, boolean] {
+    useTransition(
+      config: SuspenseConfig | void | null,
+    ): [(() => void) => void, boolean] {
       currentHookNameInDev = 'useTransition';
       warnInvalidHookAccess();
       updateHookTypesDev();
-      return rerenderTransition();
+      return rerenderTransition(config);
     },
-    useMutableSource<Source, Snapshot>(
-      source: MutableSource<Source>,
-      getSnapshot: MutableSourceGetSnapshotFn<Source, Snapshot>,
-      subscribe: MutableSourceSubscribeFn<Source, Snapshot>,
-    ): Snapshot {
-      currentHookNameInDev = 'useMutableSource';
-      warnInvalidHookAccess();
-      updateHookTypesDev();
-      return updateMutableSource(source, getSnapshot, subscribe);
-    },
-    useOpaqueIdentifier(): OpaqueIDType | void {
-      currentHookNameInDev = 'useOpaqueIdentifier';
-      warnInvalidHookAccess();
-      updateHookTypesDev();
-      return rerenderOpaqueIdentifier();
-    },
-
-    unstable_isNewReconciler: enableNewReconciler,
   };
 }

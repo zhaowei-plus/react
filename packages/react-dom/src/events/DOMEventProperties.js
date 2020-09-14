@@ -7,28 +7,28 @@
  * @flow
  */
 
-import type {EventPriority} from 'shared/ReactTypes';
-import type {DOMEventName} from './DOMEventNames';
+import type { EventPriority } from 'shared/ReactTypes';
+import type { DOMEventName } from './DOMEventNames';
 
-import {registerTwoPhaseEvent} from './EventRegistry';
+import { registerTwoPhaseEvent } from './EventRegistry';
 import {
-  ANIMATION_END,
-  ANIMATION_ITERATION,
-  ANIMATION_START,
-  TRANSITION_END,
+    ANIMATION_END,
+    ANIMATION_ITERATION,
+    ANIMATION_START,
+    TRANSITION_END,
 } from './DOMEventNames';
+
 import {
-  DiscreteEvent,
-  UserBlockingEvent,
-  ContinuousEvent,
+    DiscreteEvent, // 离散事件
+    UserBlockingEvent, // 用户阻止事件
+    ContinuousEvent, // 连续事件
 } from 'shared/ReactTypes';
 
-import {enableCreateEventHandleAPI} from 'shared/ReactFeatureFlags';
+import { enableCreateEventHandleAPI } from 'shared/ReactFeatureFlags';
 
-export const topLevelEventsToReactNames: Map<
-  DOMEventName,
-  string | null,
-> = new Map();
+export const topLevelEventsToReactNames: Map <
+    DOMEventName,
+    string | null, > = new Map();
 
 const eventPriorities = new Map();
 
@@ -43,101 +43,101 @@ const eventPriorities = new Map();
 
 // prettier-ignore
 const discreteEventPairsForSimpleEventPlugin = [
-  ('cancel': DOMEventName), 'cancel',
-  ('click': DOMEventName), 'click',
-  ('close': DOMEventName), 'close',
-  ('contextmenu': DOMEventName), 'contextMenu',
-  ('copy': DOMEventName), 'copy',
-  ('cut': DOMEventName), 'cut',
-  ('auxclick': DOMEventName), 'auxClick',
-  ('dblclick': DOMEventName), 'doubleClick', // Careful!
-  ('dragend': DOMEventName), 'dragEnd',
-  ('dragstart': DOMEventName), 'dragStart',
-  ('drop': DOMEventName), 'drop',
-  ('focusin': DOMEventName), 'focus', // Careful!
-  ('focusout': DOMEventName), 'blur', // Careful!
-  ('input': DOMEventName), 'input',
-  ('invalid': DOMEventName), 'invalid',
-  ('keydown': DOMEventName), 'keyDown',
-  ('keypress': DOMEventName), 'keyPress',
-  ('keyup': DOMEventName), 'keyUp',
-  ('mousedown': DOMEventName), 'mouseDown',
-  ('mouseup': DOMEventName), 'mouseUp',
-  ('paste': DOMEventName), 'paste',
-  ('pause': DOMEventName), 'pause',
-  ('play': DOMEventName), 'play',
-  ('pointercancel': DOMEventName), 'pointerCancel',
-  ('pointerdown': DOMEventName), 'pointerDown',
-  ('pointerup': DOMEventName), 'pointerUp',
-  ('ratechange': DOMEventName), 'rateChange',
-  ('reset': DOMEventName), 'reset',
-  ('seeked': DOMEventName), 'seeked',
-  ('submit': DOMEventName), 'submit',
-  ('touchcancel': DOMEventName), 'touchCancel',
-  ('touchend': DOMEventName), 'touchEnd',
-  ('touchstart': DOMEventName), 'touchStart',
-  ('volumechange': DOMEventName), 'volumeChange',
+    ('cancel': DOMEventName), 'cancel',
+    ('click': DOMEventName), 'click',
+    ('close': DOMEventName), 'close',
+    ('contextmenu': DOMEventName), 'contextMenu',
+    ('copy': DOMEventName), 'copy',
+    ('cut': DOMEventName), 'cut',
+    ('auxclick': DOMEventName), 'auxClick',
+    ('dblclick': DOMEventName), 'doubleClick', // Careful!
+    ('dragend': DOMEventName), 'dragEnd',
+    ('dragstart': DOMEventName), 'dragStart',
+    ('drop': DOMEventName), 'drop',
+    ('focusin': DOMEventName), 'focus', // Careful!
+    ('focusout': DOMEventName), 'blur', // Careful!
+    ('input': DOMEventName), 'input',
+    ('invalid': DOMEventName), 'invalid',
+    ('keydown': DOMEventName), 'keyDown',
+    ('keypress': DOMEventName), 'keyPress',
+    ('keyup': DOMEventName), 'keyUp',
+    ('mousedown': DOMEventName), 'mouseDown',
+    ('mouseup': DOMEventName), 'mouseUp',
+    ('paste': DOMEventName), 'paste',
+    ('pause': DOMEventName), 'pause',
+    ('play': DOMEventName), 'play',
+    ('pointercancel': DOMEventName), 'pointerCancel',
+    ('pointerdown': DOMEventName), 'pointerDown',
+    ('pointerup': DOMEventName), 'pointerUp',
+    ('ratechange': DOMEventName), 'rateChange',
+    ('reset': DOMEventName), 'reset',
+    ('seeked': DOMEventName), 'seeked',
+    ('submit': DOMEventName), 'submit',
+    ('touchcancel': DOMEventName), 'touchCancel',
+    ('touchend': DOMEventName), 'touchEnd',
+    ('touchstart': DOMEventName), 'touchStart',
+    ('volumechange': DOMEventName), 'volumeChange',
 ];
 
-const otherDiscreteEvents: Array<DOMEventName> = [
-  'change',
-  'selectionchange',
-  'textInput',
-  'compositionstart',
-  'compositionend',
-  'compositionupdate',
+const otherDiscreteEvents: Array < DOMEventName > = [
+    'change',
+    'selectionchange',
+    'textInput',
+    'compositionstart',
+    'compositionend',
+    'compositionupdate',
 ];
 
 if (enableCreateEventHandleAPI) {
-  otherDiscreteEvents.push('beforeblur', 'afterblur');
+    otherDiscreteEvents.push('beforeblur', 'afterblur');
 }
 
 // prettier-ignore
-const userBlockingPairsForSimpleEventPlugin: Array<string | DOMEventName> = [
-  ('drag': DOMEventName), 'drag',
-  ('dragenter': DOMEventName), 'dragEnter',
-  ('dragexit': DOMEventName), 'dragExit',
-  ('dragleave': DOMEventName), 'dragLeave',
-  ('dragover': DOMEventName), 'dragOver',
-  ('mousemove': DOMEventName), 'mouseMove',
-  ('mouseout': DOMEventName), 'mouseOut',
-  ('mouseover': DOMEventName), 'mouseOver',
-  ('pointermove': DOMEventName), 'pointerMove',
-  ('pointerout': DOMEventName), 'pointerOut',
-  ('pointerover': DOMEventName), 'pointerOver',
-  ('scroll': DOMEventName), 'scroll',
-  ('toggle': DOMEventName), 'toggle',
-  ('touchmove': DOMEventName), 'touchMove',
-  ('wheel': DOMEventName), 'wheel',
+const userBlockingPairsForSimpleEventPlugin: Array < string | DOMEventName > = [
+    ('drag': DOMEventName), 'drag',
+    ('dragenter': DOMEventName), 'dragEnter',
+    ('dragexit': DOMEventName), 'dragExit',
+    ('dragleave': DOMEventName), 'dragLeave',
+    ('dragover': DOMEventName), 'dragOver',
+    ('mousemove': DOMEventName), 'mouseMove',
+    ('mouseout': DOMEventName), 'mouseOut',
+    ('mouseover': DOMEventName), 'mouseOver',
+    ('pointermove': DOMEventName), 'pointerMove',
+    ('pointerout': DOMEventName), 'pointerOut',
+    ('pointerover': DOMEventName), 'pointerOver',
+    ('scroll': DOMEventName), 'scroll',
+    ('toggle': DOMEventName), 'toggle',
+    ('touchmove': DOMEventName), 'touchMove',
+    ('wheel': DOMEventName), 'wheel',
 ];
 
 // prettier-ignore
-const continuousPairsForSimpleEventPlugin: Array<string | DOMEventName> = [
-  ('abort': DOMEventName), 'abort',
-  (ANIMATION_END: DOMEventName), 'animationEnd',
-  (ANIMATION_ITERATION: DOMEventName), 'animationIteration',
-  (ANIMATION_START: DOMEventName), 'animationStart',
-  ('canplay': DOMEventName), 'canPlay',
-  ('canplaythrough': DOMEventName), 'canPlayThrough',
-  ('durationchange': DOMEventName), 'durationChange',
-  ('emptied': DOMEventName), 'emptied',
-  ('encrypted': DOMEventName), 'encrypted',
-  ('ended': DOMEventName), 'ended',
-  ('error': DOMEventName), 'error',
-  ('gotpointercapture': DOMEventName), 'gotPointerCapture',
-  ('load': DOMEventName), 'load',
-  ('loadeddata': DOMEventName), 'loadedData',
-  ('loadedmetadata': DOMEventName), 'loadedMetadata',
-  ('loadstart': DOMEventName), 'loadStart',
-  ('lostpointercapture': DOMEventName), 'lostPointerCapture',
-  ('playing': DOMEventName), 'playing',
-  ('progress': DOMEventName), 'progress',
-  ('seeking': DOMEventName), 'seeking',
-  ('stalled': DOMEventName), 'stalled',
-  ('suspend': DOMEventName), 'suspend',
-  ('timeupdate': DOMEventName), 'timeUpdate',
-  (TRANSITION_END: DOMEventName), 'transitionEnd',
-  ('waiting': DOMEventName), 'waiting',
+const continuousPairsForSimpleEventPlugin: Array < string | DOMEventName > = [
+    ('abort': DOMEventName), 'abort',
+    (ANIMATION_END: DOMEventName), 'animationEnd',
+    (ANIMATION_ITERATION: DOMEventName), 'animationIteration',
+    (ANIMATION_START: DOMEventName), 'animationStart',
+    ('canplay': DOMEventName), 'canPlay',
+    ('canplaythrough': DOMEventName), 'canPlayThrough',
+    ('durationchange': DOMEventName), 'durationChange',
+    ('emptied': DOMEventName), 'emptied',
+    ('encrypted': DOMEventName), 'encrypted',
+    ('ended': DOMEventName), 'ended',
+    ('error': DOMEventName), 'error',
+    ('gotpointercapture': DOMEventName), 'gotPointerCapture',
+    ('load': DOMEventName), 'load',
+    ('loadeddata': DOMEventName), 'loadedData',
+    ('loadedmetadata': DOMEventName), 'loadedMetadata',
+    ('loadstart': DOMEventName), 'loadStart',
+    ('lostpointercapture': DOMEventName), 'lostPointerCapture',
+    ('playing': DOMEventName), 'playing',
+    ('progress': DOMEventName), 'progress',
+    ('seeking': DOMEventName), 'seeking',
+    ('stalled': DOMEventName), 'stalled',
+    ('suspend': DOMEventName), 'suspend',
+    ('timeupdate': DOMEventName), 'timeUpdate',
+    (TRANSITION_END: DOMEventName), 'transitionEnd',
+    ('waiting': DOMEventName), 'waiting',
 ];
 
 /**
@@ -153,74 +153,74 @@ const continuousPairsForSimpleEventPlugin: Array<string | DOMEventName> = [
  * and registers them.
  */
 function registerSimplePluginEventsAndSetTheirPriorities(
-  eventTypes: Array<DOMEventName | string>,
-  priority: EventPriority,
+    eventTypes: Array < DOMEventName | string > ,
+    priority: EventPriority,
 ): void {
-  // As the event types are in pairs of two, we need to iterate
-  // through in twos. The events are in pairs of two to save code
-  // and improve init perf of processing this array, as it will
-  // result in far fewer object allocations and property accesses
-  // if we only use three arrays to process all the categories of
-  // instead of tuples.
-  for (let i = 0; i < eventTypes.length; i += 2) {
-    const topEvent = ((eventTypes[i]: any): DOMEventName);
-    const event = ((eventTypes[i + 1]: any): string);
-    const capitalizedEvent = event[0].toUpperCase() + event.slice(1);
-    const reactName = 'on' + capitalizedEvent;
-    eventPriorities.set(topEvent, priority);
-    topLevelEventsToReactNames.set(topEvent, reactName);
-    registerTwoPhaseEvent(reactName, [topEvent]);
-  }
+    // As the event types are in pairs of two, we need to iterate
+    // through in twos. The events are in pairs of two to save code
+    // and improve init perf of processing this array, as it will
+    // result in far fewer object allocations and property accesses
+    // if we only use three arrays to process all the categories of
+    // instead of tuples.
+    for (let i = 0; i < eventTypes.length; i += 2) {
+        const topEvent = ((eventTypes[i]: any): DOMEventName);
+        const event = ((eventTypes[i + 1]: any): string);
+        const capitalizedEvent = event[0].toUpperCase() + event.slice(1);
+        const reactName = 'on' + capitalizedEvent;
+        eventPriorities.set(topEvent, priority);
+        topLevelEventsToReactNames.set(topEvent, reactName);
+        registerTwoPhaseEvent(reactName, [topEvent]);
+    }
 }
 
 function setEventPriorities(
-  eventTypes: Array<DOMEventName>,
-  priority: EventPriority,
+    eventTypes: Array < DOMEventName > ,
+    priority: EventPriority,
 ): void {
-  for (let i = 0; i < eventTypes.length; i++) {
-    eventPriorities.set(eventTypes[i], priority);
-  }
+    for (let i = 0; i < eventTypes.length; i++) {
+        eventPriorities.set(eventTypes[i], priority);
+    }
 }
 
 export function getEventPriorityForPluginSystem(
-  domEventName: DOMEventName,
+    domEventName: DOMEventName,
 ): EventPriority {
-  const priority = eventPriorities.get(domEventName);
-  // Default to a ContinuousEvent. Note: we might
-  // want to warn if we can't detect the priority
-  // for the event.
-  return priority === undefined ? ContinuousEvent : priority;
+    const priority = eventPriorities.get(domEventName);
+    // Default to a ContinuousEvent. Note: we might
+    // want to warn if we can't detect the priority
+    // for the event.
+    return priority === undefined ? ContinuousEvent : priority;
 }
 
 export function getEventPriorityForListenerSystem(
-  type: DOMEventName,
+    type: DOMEventName,
 ): EventPriority {
-  const priority = eventPriorities.get(type);
-  if (priority !== undefined) {
-    return priority;
-  }
-  if (__DEV__) {
-    console.warn(
-      'The event "%s" provided to createEventHandle() does not have a known priority type.' +
-        ' It is recommended to provide a "priority" option to specify a priority.',
-      type,
-    );
-  }
-  return ContinuousEvent;
+    const priority = eventPriorities.get(type);
+    if (priority !== undefined) {
+        return priority;
+    }
+    if (__DEV__) {
+        console.warn(
+            'The event "%s" provided to createEventHandle() does not have a known priority type.' +
+            ' It is recommended to provide a "priority" option to specify a priority.',
+            type,
+        );
+    }
+    return ContinuousEvent;
 }
 
 export function registerSimpleEvents() {
-  registerSimplePluginEventsAndSetTheirPriorities(
-    discreteEventPairsForSimpleEventPlugin,
-    DiscreteEvent,
-  );
-  registerSimplePluginEventsAndSetTheirPriorities(
-    userBlockingPairsForSimpleEventPlugin,
-    UserBlockingEvent,
-  );
-  registerSimplePluginEventsAndSetTheirPriorities(
-    continuousPairsForSimpleEventPlugin,
-    ContinuousEvent,
-  );
-  setEventPriorities(otherDiscreteEvents, DiscreteEvent);
+    registerSimplePluginEventsAndSetTheirPriorities(
+        discreteEventPairsForSimpleEventPlugin,
+        DiscreteEvent,
+    );
+    registerSimplePluginEventsAndSetTheirPriorities(
+        userBlockingPairsForSimpleEventPlugin,
+        UserBlockingEvent,
+    );
+    registerSimplePluginEventsAndSetTheirPriorities(
+        continuousPairsForSimpleEventPlugin,
+        ContinuousEvent,
+    );
+    setEventPriorities(otherDiscreteEvents, DiscreteEvent);
 }
