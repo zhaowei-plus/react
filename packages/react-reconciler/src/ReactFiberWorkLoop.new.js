@@ -276,10 +276,13 @@ const RootCompleted = 5;
 // Describes where we are in the React execution stack
 let executionContext: ExecutionContext = NoContext;
 // The root we're working on
+// 正在执行的 root fiber节点
 let workInProgressRoot: FiberRoot | null = null;
 // The fiber we're working on
+// 正在执行的fiber节点
 let workInProgress: Fiber | null = null;
 // The lanes we're rendering
+// 正在渲染的通道
 let workInProgressRootRenderLanes: Lanes = NoLanes;
 
 // Stack that allows components to change the render lanes for its subtree
@@ -345,8 +348,9 @@ let pendingPassiveProfilerEffects: Array < Fiber > = [];
 let rootsWithPendingDiscreteUpdates: Set < FiberRoot > | null = null;
 
 // Use these to prevent an infinite loop of nested updates
+// 使用这些来防止嵌套更新的无限循环
 const NESTED_UPDATE_LIMIT = 50;
-let nestedUpdateCount: number = 0;
+let nestedUpdateCount: number = 0; // 嵌套更新数量
 let rootWithNestedUpdates: FiberRoot | null = null;
 
 const NESTED_PASSIVE_UPDATE_LIMIT = 50;
@@ -406,7 +410,6 @@ export function requestUpdateLane(fiber: Fiber): Lane {
     if ((mode & BlockingMode) === NoMode) {
         return (SyncLane: Lane);
     } else if ((mode & ConcurrentMode) === NoMode) {
-
         return getCurrentPriorityLevel() === ImmediateSchedulerPriority ?
             (SyncLane: Lane) :
             (SyncBatchedLane: Lane);
@@ -499,7 +502,6 @@ export function requestUpdateLane(fiber: Fiber): Lane {
 
         lane = findUpdateLane(schedulerLanePriority, currentEventWipLanes);
     }
-
     return lane;
 }
 
@@ -589,6 +591,7 @@ export function scheduleUpdateOnFiber(
             (executionContext & (RenderContext | CommitContext)) === NoContext
         ) {
             // Register pending interactions on the root to avoid losing traced interaction data.
+            // 在 Root 上注册待处理的交互，以避免丢失跟踪的交互数据。
             schedulePendingInteractions(root, lane);
 
             // This is a legacy edge case. The initial mount of a ReactDOM.render-ed
@@ -625,6 +628,7 @@ export function scheduleUpdateOnFiber(
                 rootsWithPendingDiscreteUpdates.add(root);
             }
         }
+
         // Schedule other updates after in case the callback is sync.
         // 安排其他更新，以防回调同步。
         ensureRootIsScheduled(root, eventTime);
@@ -1015,14 +1019,14 @@ function markRootSuspended(root, suspendedLanes) {
     markRootSuspended_dontCallThisOneDirectly(root, suspendedLanes);
 }
 
-// This is the entry point for synchronous tasks that don't go
-// through Scheduler
+// This is the entry point for synchronous tasks that don't go through Scheduler
 function performSyncWorkOnRoot(root) {
     invariant(
         (executionContext & (RenderContext | CommitContext)) === NoContext,
         'Should not already be working.',
     );
 
+    // 刷新被动效果
     flushPassiveEffects();
 
     let lanes;

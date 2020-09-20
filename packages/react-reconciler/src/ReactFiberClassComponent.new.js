@@ -201,11 +201,9 @@ const classComponentUpdater = {
          const update = {
           eventTime,
           lane,
-
           tag: UpdateState,
           payload: null,
           callback: null,
-
           next: null,
         };
          */
@@ -811,6 +809,8 @@ function callComponentWillReceiveProps(
                 );
             }
         }
+
+        // 更新队列
         classComponentUpdater.enqueueReplaceState(instance, instance.state, null);
     }
 }
@@ -960,8 +960,12 @@ function resumeMountClassInstance(
 
     const oldState = workInProgress.memoizedState;
     let newState = (instance.state = oldState);
+
+    // 处理更新队列
     processUpdateQueue(workInProgress, newProps, instance, renderLanes);
+
     newState = workInProgress.memoizedState;
+
     if (
         oldProps === newProps &&
         oldState === newState &&

@@ -662,6 +662,7 @@ export function setInitialProperties(
 }
 
 // Calculate the diff between the two objects.
+// 计算两个对象之间的差异。
 export function diffProperties(
     domElement: Element,
     tag: string,
@@ -677,6 +678,7 @@ export function diffProperties(
 
     let lastProps: Object;
     let nextProps: Object;
+    // 计算 lastProps nextProps的值
     switch (tag) {
         case 'input':
             lastProps = ReactDOMInputGetHostProps(domElement, lastRawProps);
@@ -711,12 +713,14 @@ export function diffProperties(
             break;
     }
 
+    // 断言有效属性
     assertValidProps(tag, nextProps);
 
     let propKey;
     let styleName;
     let styleUpdates = null;
     for (propKey in lastProps) {
+
         if (
             nextProps.hasOwnProperty(propKey) ||
             !lastProps.hasOwnProperty(propKey) ||
@@ -724,6 +728,7 @@ export function diffProperties(
         ) {
             continue;
         }
+
         if (propKey === STYLE) {
             const lastStyle = lastProps[propKey];
             for (styleName in lastStyle) {
@@ -756,6 +761,7 @@ export function diffProperties(
             (updatePayload = updatePayload || []).push(propKey, null);
         }
     }
+
     for (propKey in nextProps) {
         const nextProp = nextProps[propKey];
         const lastProp = lastProps != null ? lastProps[propKey] : undefined;
@@ -833,23 +839,30 @@ export function diffProperties(
         } else if (registrationNameDependencies.hasOwnProperty(propKey)) {
             // 如果是props这个对象直接声明的属性，而不是从原型链中继承而来的，则处理它
             // nextProp表示要创建或者更新的属性，而lastProp则表示上一次的属性
-            // 对于 mountComponent，lastProp为null。updateComponent二者都不为null。unmountComponent则nextProp为null
+            // 对于 mountComponent，lastProp为null。
+            // updateComponent二者都不为null。
+            // unmountComponent则nextProp为null
 
             if (nextProp != null) {
                 // We eagerly listen to this even though we haven't committed yet.
                 if (__DEV__ && typeof nextProp !== 'function') {
                     warnForInvalidEventListener(propKey, nextProp);
                 }
+
+                // 如果没有对跟节点启用侦听器
                 if (!enableEagerRootListeners) {
+                    // 对跟节点监听事件
                     ensureListeningTo(rootContainerElement, propKey, domElement);
                 } else if (propKey === 'onScroll') {
                     listenToNonDelegatedEvent('scroll', domElement);
                 }
             }
+
             if (!updatePayload && lastProp !== nextProp) {
                 // This is a special case. If any listener updates we need to ensure
                 // that the "current" props pointer gets updated so we need a commit
                 // to update this element.
+                //这是一个特例。 如果有任何监听器更新，则需要确保“当前” props指针得到更新，因此我们需要提交以更新此元素。
                 updatePayload = [];
             }
         } else if (
